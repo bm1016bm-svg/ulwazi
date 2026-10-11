@@ -55,7 +55,7 @@ such there is no one to one mapping. Below shows each of the admonitions and how
 
         print("last element in the notification")
 
-* A code block followed by a tip inside a list item:
+*   A code block followed by a tip inside a list item:
 
     .. code-block:: yaml
 

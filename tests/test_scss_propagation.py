@@ -89,7 +89,7 @@ def test_rendered_color():
             )
             try:
                 selector = (
-                    "article li.p-list__item .highlight-yaml "
+                    "article li.p-list__item > .highlight-yaml "
                     "+ .p-notification--positive"
                 )
                 notice = sample.locator(selector)

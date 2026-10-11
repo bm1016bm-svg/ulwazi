@@ -12,11 +12,6 @@ markup:
     source: myst-cheat-sheet.md / rst-cheat-sheet.rst "Admonitions"; test6_admonitions.rst; test7_admonitionsMD.md
     checks:
       - tests/test_features.py::test_features_fast
-  - name: Code-block-to-admonition spacing inside list items
-    source: docs/content/test6_admonitions.rst and test7_admonitionsMD.md (YAML block followed by tip inside a list item)
-    checks:
-      - tests/test_features.py::test_features_fast
-      - tests/test_scss_propagation.py::test_rendered_color
   - name: Highlighted code blocks and copy script wiring
     source: cheatsheets "Code blocks"; copybutton.js script tag
     checks:

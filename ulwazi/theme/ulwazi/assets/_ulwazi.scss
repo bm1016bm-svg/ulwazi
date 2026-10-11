@@ -361,9 +361,9 @@ button.copybtn:hover {
   color: var(--vf-color-text-default);
 }
 
-// Preserve vertical rhythm when a notification immediately follows a code
-// block. Sphinx code wrappers have no bottom margin.
-div[class*="highlight-"] + [class^="p-notification"] {
+// List items remove the code block's bottom margin; restore the gap before
+// a following notification without changing spacing outside lists.
+.p-list__item div[class*="highlight-"] + [class^="p-notification"] {
   margin-top: 1.5rem;
 }
 

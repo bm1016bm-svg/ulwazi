@@ -14457,7 +14457,7 @@ button.copybtn:hover {
   color: var(--vf-color-text-default);
 }
 
-div[class*=highlight-] + [class^=p-notification] {
+.p-list__item div[class*=highlight-] + [class^=p-notification] {
   margin-top: 1.5rem;
 }
 
