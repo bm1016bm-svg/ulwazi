@@ -31,9 +31,9 @@ assertions inside one grouped case do not.
 
     `test_layout_smoke.py` (**1 fast**) — every built page's article is inside the docs main column.
 * - 4\. Features and regressions
-  - `test_config_robustness.py` (**5 fast**) — four Read the Docs branch-selection cases; one grouped case for minimal, default, depth, legacy, maximum and fallback configuration.
+  - `test_config_robustness.py` (**16 fast**) — four Read the Docs branch-selection cases; one grouped case for minimal, default, depth, legacy, maximum and fallback configuration; ten parametrized invalid `help_links` cases plus one theme-only loading case for the Get help panel.
 
-    `test_features.py` (**1 fast, 1 slow**, {doc}`details <features>`) — grouped theme markup (TOCs, tabs, headings, admonitions, lists, tables, code, search mapping) and browser journeys (consent, navigation, drawer, tabs, copy, theme, search).
+    `test_features.py` (**1 fast, 1 slow**, {doc}`details <features>`) — grouped theme markup (TOCs, tabs, headings, admonitions, lists, tables, code, search mapping, Get help panel) and browser journeys (consent, navigation, drawer, tabs, copy, theme, search).
 
     `test_scss_propagation.py` (**1 fast, 3 slow**) — SCSS fixture markup; computed colour, sidebar indicator spacing, and ordered-list marker size in Chromium.
 * - 5\. Extension compatibility
@@ -60,7 +60,7 @@ assertions inside one grouped case do not.
     `test_test_reporting.py` (**11 fast**, {doc}`details <infrastructure>`) — CLI category/tier assignments, parameter and outcome accounting, unmapped-case visibility, green reserved for passing results, and the live time-left estimate.
 ```
 
-**Full selection:** 91 cases across 19 modules (63 fast, 28 slow); each case
+**Full selection:** 102 cases across 19 modules (74 fast, 28 slow); each case
 belongs to exactly one CLI group. `test_inventory_counts_match_collection`
 fails if this table or line drifts from what pytest collects. CLI grouping
 is separate from the curated {doc}`feature coverage <coverage>` metric and

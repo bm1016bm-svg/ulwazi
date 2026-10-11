@@ -206,7 +206,35 @@ setting a value, so an incomplete setup can produce a broken link.
     - `logo_title`
     - If unset, the text label next to the header logo is empty.
     - Text label shown beside the logo in the header navigation.
+*
+    - `help_links`
+    - "Get help" panel doesn't render.
+    - Dictionary rendering a "Get help" panel below the Global ToC in the side navigation, listing external help resources; see below.
 ```
+
+#### Get help links
+
+Set `help_links` in `conf.py` to render a "Get help" panel below the Global ToC
+in the side navigation, with links to resources outside your documentation
+tree (a forum, an issue tracker, a chat channel):
+
+```python
+html_context = {
+    "help_links": {
+        "title": "Get help",
+        "links": [
+            {"text": "Ask on the forum", "url": "https://discourse.ubuntu.com"},
+            {"text": "Report a doc issue", "url": "https://github.com/example/docs/issues/new"},
+        ],
+    },
+}
+```
+
+The panel is **off by default**: leave `help_links` unset (or set it to `False`)
+and the side navigation is unchanged. `title` must be a non-empty string and
+`links` a non-empty list of `{text, url}` entries; each `url` must be an
+absolute `http(s)` URL. An invalid value is ignored as a whole (with a build
+warning naming the offending key) rather than rendering a partial panel.
 
 ### Not currently supported
 

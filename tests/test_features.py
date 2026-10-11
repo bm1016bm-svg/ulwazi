@@ -182,6 +182,35 @@ def test_features_fast(built_site):
     else:
         errors.append(f"[{name}] headings: missing main article")
 
+    # The sample docs opt into the Get help panel (docs/conf.py); it must
+    # render below the Global ToC, without toctree link classes. CI also runs
+    # this file against the base revision, whose sample docs do not opt in,
+    # so only verify the panel when it is present (test_config_robustness
+    # hard-asserts the sample docs render it).
+    name = "content/myst-cheat-sheet"
+    soup = built_site.page(name)
+    panel = soup.select_one("nav#drawer div.p-help-links")
+    if panel is not None:
+        heading = panel.select_one("p.caption span.caption-text")
+        if not heading or heading.get_text(strip=True) != "Get help":
+            errors.append(f"[{name}] help links: heading must read 'Get help'")
+        links = panel.select("a.p-help-links__link")
+        hrefs = [link.get("href") for link in links]
+        if "https://discourse.ubuntu.com/c/documentation/7" not in hrefs:
+            errors.append(f"[{name}] help links: Discourse link missing")
+        if "https://github.com/canonical/ulwazi/issues/new" not in hrefs:
+            errors.append(f"[{name}] help links: issue-tracker link missing")
+        for link in links:
+            classes = link.get("class", [])
+            if (
+                "p-side-navigation__link" in classes
+                or "is-active" in classes
+                or link.get("aria-current") is not None
+            ):
+                errors.append(
+                    f"[{name}] help links: must not inherit toctree link classes"
+                )
+
     for name in CHEAT_SHEETS:
         soup = built_site.page(name)
         errors.extend(_check_toc(name, soup))
@@ -348,7 +377,18 @@ def test_features_slow(built_site):  # noqa: PLR0915
                     expect(panel).to_be_visible()
                     expect(close).to_be_focused()
                     page.keyboard.press("Shift+Tab")
-                    expect(panel.locator("a[href]").last).to_be_focused()
+                    # The Get help links sit at the bottom of the drawer and
+                    # must participate in its focus order like every other
+                    # link: Shift+Tab from Close lands on the last one.
+                    last_link = panel.locator("a[href]").last
+                    expect(last_link).to_be_focused()
+                    help_link = panel.locator("a.p-help-links__link").last
+                    if help_link.count():
+                        assert last_link.evaluate(
+                            "el => el === document.activeElement"
+                        ) and last_link.get_attribute("class"), (
+                            "Get help links must stay inside the drawer focus order"
+                        )
                     page.keyboard.press("Tab")
                     expect(close).to_be_focused()
                     page.keyboard.press("Escape")

@@ -33,7 +33,7 @@ from sphinx.config import Config
 from sphinx.util import logging as sphinx_logging
 from sphinx.util.typing import ExtensionMetadata
 
-from ulwazi.navigation import get_navigation_tree
+from ulwazi.navigation import add_help_links, get_navigation_tree, validate_help_links
 from ulwazi.tabs import convert_tabs
 
 logger = sphinx_logging.getLogger(__name__)
@@ -90,6 +90,9 @@ def setup(app: Sphinx) -> ExtensionMetadata:
     app.connect(  # pyright: ignore [reportUnknownMemberType]
         "builder-inited", _setup_structured_toc_styling
     )
+    # Validate html_context["help_links"] once per build (not per page),
+    # including when Ulwazi is selected only via html_theme.
+    app.connect("builder-inited", _setup_help_links)  # pyright: ignore [reportUnknownMemberType]
     app.connect("html-page-context", _html_page_context)  # pyright: ignore [reportUnknownMemberType]
 
     return {
@@ -193,6 +196,7 @@ def _configure_html_context(html_context: dict[str, Any]) -> None:
         ("display_contributors", True),
         ("path", "/docs"),
         ("tag_id", "GTM-N384JMX2"),
+        ("help_links", None),
     ]
 
     for value, default in values_and_defaults:
@@ -437,7 +441,25 @@ def _structured_toc_color_css(config: Config) -> str:
     return ":root{" + " ".join(declarations) + "}"
 
 
-def _compute_navigation_tree(context: dict[str, Any]) -> str:
+def _setup_help_links(app: Sphinx) -> None:
+    """Validate ``html_context["help_links"]`` once per HTML build.
+
+    Connected to ``builder-inited`` (like :func:`_copy_pdf_assets`) so it also
+    runs when Ulwazi is selected only via ``html_theme``. The normalised
+    result is stored on the app; the raw conf.py value is never mutated.
+    Invalid values warn once here and render nothing later.
+    """
+    if app.builder.format != "html":
+        return
+    app._ulwazi_help_links = validate_help_links(  # pyright: ignore [reportAttributeAccessIssue]
+        app.config.html_context.get("help_links")
+    )
+    # Mark validation as done even when the result is None (off/invalid),
+    # so _compute_navigation_tree never re-validates or re-warns per page.
+    app._ulwazi_help_links_validated = True  # pyright: ignore [reportAttributeAccessIssue]
+
+
+def _compute_navigation_tree(app: Sphinx, context: dict[str, Any]) -> str:
     # The globaltoc tree by Sphinx
     if "toctree" in context:
         toctree = context["toctree"]
@@ -449,7 +471,18 @@ def _compute_navigation_tree(context: dict[str, Any]) -> str:
     else:
         toctree_html = ""
 
-    return get_navigation_tree(toctree_html)
+    navigation_tree = get_navigation_tree(toctree_html)
+    if not navigation_tree:
+        # No toctree means no side navigation: render no help panel either,
+        # even when help_links is configured (nothing to append it to).
+        return ""
+    # Use the value validated once at builder-inited; only fall back to
+    # validating the raw context value for direct callers without an app.
+    if getattr(app, "_ulwazi_help_links_validated", False):
+        help_links = getattr(app, "_ulwazi_help_links", None)
+    else:
+        help_links = validate_help_links(context.get("help_links"))
+    return add_help_links(navigation_tree, help_links)
 
 
 def apply_heading_classes(body_html: str) -> str:
@@ -755,7 +788,7 @@ def _html_page_context(
     _doctree: nodes.document | None,
 ) -> None:
     # Values computed from page-level context.
-    context["expandable_navigation_tree"] = _compute_navigation_tree(context)
+    context["expandable_navigation_tree"] = _compute_navigation_tree(app, context)
 
     if "toc" in context:
         context["toc"] = modify_local_toc(context["toc"])

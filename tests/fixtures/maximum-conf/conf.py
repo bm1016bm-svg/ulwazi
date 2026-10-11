@@ -39,6 +39,14 @@ html_context = {
         "license": True,
         "entries": ['<a href="https://example.com/support">Maximum support</a>'],
     },
+    # Opt-in "Get help" panel below the Global ToC.
+    "help_links": {
+        "title": "Get help",
+        "links": [
+            {"text": "Ask on the forum", "url": "https://forum.example.com/maximum"},
+            {"text": "Report a doc issue", "url": "https://github.com/example/maximum-docs/issues/new"},
+        ],
+    },
     # Reserved/legacy values: Ulwazi preserves these, but does not render them.
     "product_tag": "_static/maximum-tag.svg",
     "github_issues": "disabled",

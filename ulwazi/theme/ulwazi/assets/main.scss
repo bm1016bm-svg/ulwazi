@@ -164,6 +164,70 @@ main {
   font-size: $font-size-p !important;
 }
 
+/* Get help panel: opt-in external links below the Global ToC. */
+
+/* Vanilla suppresses the separator after the last nav list
+   (ul:last-of-type::after), so the panel draws its own divider,
+   matching that rule's inset, colour and thickness. */
+.p-help-links {
+  position: relative;
+}
+
+.p-help-links::before {
+  background: var(--vf-color-border-low-contrast);
+  content: "";
+  height: 1px;
+  left: $nav-offset-left;
+  position: absolute;
+  right: 0;
+  top: -0.75rem;
+}
+
+/* Icon sits inside the heading's own left inset (19px), so the label stays
+   aligned with the ToC captions above it. */
+.p-help-links .caption {
+  position: relative;
+}
+
+.p-help-links .caption .p-help-links__icon {
+  height: 1rem;
+  left: calc($nav-offset-left - 1rem - 0.1875rem);
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 1rem;
+}
+
+.p-help-links__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.p-help-links__item {
+  padding: 0;
+  margin: 0;
+}
+
+/* Match the real nav rows: full-width hover background, 32px row height.
+   The extra .p-help-links scope out-specifies Vanilla's blanket
+   .p-side-navigation--raw-html li > a padding (1rem/1.5rem). */
+.p-help-links .p-help-links__link {
+  align-items: center;
+  color: var(--vf-color-text-inactive);
+  display: flex;
+  font-size: $font-size-p;
+  line-height: 1.5rem;
+  min-height: 32px;
+  padding: 0 0.3125rem 0 $nav-offset-left;
+}
+
+.p-help-links .p-help-links__link:hover {
+  background: var(--vf-color-background-hover);
+  color: var(--vf-color-text-default);
+  text-decoration: none;
+}
+
 /* Compacting list elements */
 .p-list--unordered .p-list__item,
 .p-list--unordered .p-list__item:not(.task-list-item) p,

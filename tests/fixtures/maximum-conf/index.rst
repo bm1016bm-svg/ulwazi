@@ -17,3 +17,7 @@ H6 heading
 ++++++++++
 
 Content.
+
+.. toctree::
+
+   page

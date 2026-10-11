@@ -223,6 +223,21 @@ html_context = {
             '<a href="#tracker-settings" class="js-revoke-cookie-manager muted-link">Manage your tracker settings</a>',
         ],
     },
+    "help_links": {
+        # Opt-in "Get help" panel below the Global ToC; see
+        # docs/content/configuration.md for the expected shape.
+        "title": "Get help",
+        "links": [
+            {
+                "text": "Ask on Ubuntu Discourse",
+                "url": "https://discourse.ubuntu.com/c/documentation/7",
+            },
+            {
+                "text": "Report a documentation issue",
+                "url": "https://github.com/canonical/ulwazi/issues/new",
+            },
+        ],
+    },
 }
 
 # TODO: To enable the edit button on pages, uncomment and change the link to a
