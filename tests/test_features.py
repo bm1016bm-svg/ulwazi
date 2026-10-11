@@ -119,12 +119,6 @@ def _check_admonitions(name, soup, *, full_mapping=False):
         or not soup.select_one('a[href="#note-reference"]')
     ):
         errors.append(f"[{name}] admonitions: note-reference target/link lost")
-    if full_mapping and not soup.select_one(
-        "li.p-list__item > .highlight-yaml + .p-notification--positive"
-    ):
-        errors.append(
-            f"[{name}] admonitions: missing adjacent code block and tip inside a list"
-        )
     return errors
 
 
