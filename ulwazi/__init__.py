@@ -19,6 +19,9 @@
 import importlib.util
 import json
 import logging
+import os
+import re
+import shutil
 from pathlib import Path
 from typing import Any, cast
 
@@ -27,10 +30,13 @@ from bs4.element import AttributeValueList
 from docutils import nodes
 from sphinx.application import Sphinx
 from sphinx.config import Config
+from sphinx.util import logging as sphinx_logging
 from sphinx.util.typing import ExtensionMetadata
 
-from ulwazi.navigation import get_navigation_tree
+from ulwazi.navigation import add_help_links, get_navigation_tree, validate_help_links
 from ulwazi.tabs import convert_tabs
+
+logger = sphinx_logging.getLogger(__name__)
 
 
 def setup(app: Sphinx) -> ExtensionMetadata:
@@ -41,15 +47,56 @@ def setup(app: Sphinx) -> ExtensionMetadata:
     :returns: The extension's metadata
     """
     app.add_html_theme("ulwazi", str(Path(__file__).parent / "theme/ulwazi"))
-    app.add_config_value("localtoc_max_depth", None, "html")
+    app.add_config_value("localtoc_max_depth", 3, "html", types=(int, type(None)))
+    # Project slug: the path segment of the docs site URL, e.g. "ulwazi" in
+    # https://documentation.ubuntu.com/ulwazi/. Used to compute
+    # notfound_urls_prefix for sphinx-notfound-page.
+    app.add_config_value("slug", default="", rebuild="env", types=str)
+    # Opt-out flag for the bundled sphinx-notfound-page integration: set
+    # notfound_enabled = False in conf.py (or pass -D notfound_enabled=0 on
+    # the command line) to skip both the activation and the prefix/template
+    # setup. Explicitly listing "notfound.extension" in extensions still
+    # works and only skips Ulwazi's overrides.
+    app.add_config_value("notfound_enabled", default=True, rebuild="env")
+    # Temporary theme-level styling for sphinx-structured-toc's domain/slice
+    # blocks (bullets, indent, separator colour, visited-link colour); see
+    # ulwazi/theme/ulwazi/static/css/structured-toc.css for the rationale
+    # and the removal plan once the extension ships equivalent styling.
+    app.add_config_value("ulwazi_structured_toc_styling", default=True, rebuild="html")
+    app.add_config_value(
+        "ulwazi_structured_toc_separator_color_light", default="", rebuild="html"
+    )
+    app.add_config_value(
+        "ulwazi_structured_toc_separator_color_dark", default="", rebuild="html"
+    )
+    # sphinx-notfound-page is a bundled dependency: the theme ships a 404
+    # template, a 404.svg asset, and the prefix computation, so the
+    # extension is activated by default. setup_extension is idempotent
+    # ("no-op if called twice"), so projects that also list
+    # "notfound.extension" in extensions are unaffected.
+    if app.config.notfound_enabled:
+        app.setup_extension("notfound.extension")  # pyright: ignore [reportUnknownMemberType]
+        # If Ulwazi is selected only via html_theme, Sphinx loads this entry
+        # point during HTML builder setup, after config-inited has fired.
+        # Apply just the 404 defaults here; running the entire config-inited
+        # hook at this stage would set up unrelated extensions too late.
+        if hasattr(app, "builder"):
+            _configure_notfound(app.config)
     app.connect(  # pyright: ignore [reportUnknownMemberType]
         "config-inited",
         config_inited,
     )
+    app.connect("builder-inited", _copy_pdf_assets)  # pyright: ignore [reportUnknownMemberType]
+    app.connect(  # pyright: ignore [reportUnknownMemberType]
+        "builder-inited", _setup_structured_toc_styling
+    )
+    # Validate html_context["help_links"] once per build (not per page),
+    # including when Ulwazi is selected only via html_theme.
+    app.connect("builder-inited", _setup_help_links)  # pyright: ignore [reportUnknownMemberType]
     app.connect("html-page-context", _html_page_context)  # pyright: ignore [reportUnknownMemberType]
 
     return {
-        "version": "0.5.1",
+        "version": "0.6",
         "parallel_read_safe": True,
         "parallel_write_safe": True,
     }
@@ -61,8 +108,6 @@ def config_inited(app: Sphinx, config: Config) -> None:
     :param app: The Sphinx application instance
     :param config: The Sphinx build configuration
     """
-    html_context = config.html_context
-
     required_packages = [
         "sphinxcontrib.jquery",
     ]
@@ -83,29 +128,338 @@ def config_inited(app: Sphinx, config: Config) -> None:
         "js/vanilla-tabs.js",
         "js/nav-toggle.js",
         "js/search.js",
-        "js/search-breadcrumbs.js",
         "js/theme-toggle.js",
     ]
 
+    for item in extra_js:
+        app.add_js_file(item)
+
+    # General Sphinx setup (absorbed from canonical-sphinx-config)
+
+    for pattern in ("_build", "Thumbs.db", ".DS_Store", ".sphinx"):
+        if pattern not in config.exclude_patterns:
+            config.exclude_patterns.append(pattern)
+
+    # Preserve the Canonical defaults formerly set by canonical-sphinx-config.
+    config.html_last_updated_fmt = ""
+    config.html_permalinks_icon = "¶"
+
+    _configure_html_context(config.html_context)
+
+    # NOTE: This assigns the whole dict and would wipe any user-provided
+    # html_theme_options. It also sets "sidebar_hide_name", which is not yet
+    # an Ulwazi theme option (no template reads it). Mirrors the behaviour
+    # inherited from canonical-sphinx-config; revisit when the option is
+    # implemented in the theme.
+    if config.html_title == "":
+        config.html_theme_options = {"sidebar_hide_name": True}
+
+    # The opt-out skips Ulwazi's defaults even if the user loads the extension.
+    if config.notfound_enabled:
+        _configure_notfound(config)
+
+    if "sphinx_modern_pdf_style" in config.extensions:
+        _setup_modern_pdf_style(config)
+
+
+def _configure_html_context(html_context: dict[str, Any]) -> None:
+    """Apply legacy aliases, Canonical defaults, and RTD branch links."""
+    # Deprecated aliases from the old canonical-sphinx theme: honour them if
+    # set, but only when the user hasn't already set the new-style name.
+    deprecated_aliases = [
+        ("github_version", "repo_branch"),
+        ("github_folder", "repo_folder"),
+    ]
+    for old_name, new_name in deprecated_aliases:
+        if old_name in html_context and new_name not in html_context:
+            logger.warning(
+                f"conf.py setting '{old_name}' is deprecated. Use '{new_name}' instead.",
+                type="ulwazi",
+                subtype="deprecated",
+            )
+            value = html_context[old_name]
+            if old_name == "github_folder":
+                folder = str(value).strip("/")
+                value = f"/{folder}/" if folder else "/"
+            html_context[new_name] = value
+
+    # "repo_folder" must be slash-delimited because feedback.html joins it
+    # directly with the branch and page name to construct GitHub links.
     values_and_defaults = [
         ("product_tag", "_static/tag.png"),
-        ("github_version", "main"),
-        ("github_folder", "docs"),
+        ("repo_branch", "main"),
+        ("repo_folder", "/docs/"),
+        ("default_source_extension", ".rst"),
         ("github_issues", "enabled"),
         ("discourse", "https://discourse.ubuntu.com"),
         ("sequential_nav", "none"),
         ("display_contributors", True),
         ("path", "/docs"),
+        ("tag_id", "GTM-N384JMX2"),
+        ("help_links", None),
     ]
 
     for value, default in values_and_defaults:
         html_context.setdefault(value, default)
 
-    for item in extra_js:
-        app.add_js_file(item)
+    folder = str(html_context["repo_folder"]).strip("/")
+    html_context["repo_folder"] = f"/{folder}/" if folder else "/"
+
+    # Only branch builds have an editable Git identifier. PR identifiers are
+    # numbers, tags cannot be edited, and an absent identifier must not fail.
+    if (
+        "READTHEDOCS" in os.environ
+        and os.environ.get("READTHEDOCS_VERSION_TYPE") == "branch"
+        and os.environ.get("READTHEDOCS_GIT_IDENTIFIER")
+    ):
+        html_context["repo_branch"] = os.environ["READTHEDOCS_GIT_IDENTIFIER"]
 
 
-def _compute_navigation_tree(context: dict[str, Any]) -> str:
+def _configure_notfound(config: Config) -> None:
+    """Provide theme defaults without replacing explicit project settings.
+
+    Sphinx keeps conf.py assignments in ``_raw_config``; reading the current
+    value alone cannot distinguish an explicit value from an extension default.
+    Command-line overrides are available through ``overrides``. Both must be
+    checked so the theme does not silently discard project-specific 404 URLs.
+    Sphinx does not expose a public API for checking raw conf.py assignments.
+    """
+    if (
+        "notfound_urls_prefix" not in config._raw_config  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        and "notfound_urls_prefix" not in config.overrides
+    ):
+        config.notfound_urls_prefix = _notfound_urls_prefix(config)
+    if (
+        "notfound_template" not in config._raw_config  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        and "notfound_template" not in config.overrides
+    ):
+        config.notfound_template = "404.html"
+
+
+def _setup_modern_pdf_style(config: Config) -> None:
+    """Inject Canonical branding defaults for sphinx-modern-pdf-style.
+
+    Emits a build warning when the extension registration order would cause
+    the defaults to be ignored (see :func:`_modern_pdf_defaults`).
+
+    :param config: The Sphinx build configuration
+    """
+    # The ordering below is load-bearing: warn instead of silently
+    # producing an unbranded PDF.
+    if config.extensions.index("sphinx_modern_pdf_style") < config.extensions.index(
+        "ulwazi"
+    ):
+        logger.warning(
+            'List "ulwazi" before "sphinx_modern_pdf_style" in extensions, '
+            "otherwise the Canonical PDF branding defaults are ignored."
+        )
+    _modern_pdf_defaults(config)
+
+
+def _notfound_urls_prefix(config: Config) -> str:
+    """Compute the URL prefix for sphinx-notfound-page.
+
+    The prefix must mirror the URL schema of the hosting site, which varies
+    per project:
+
+    - single-version projects serve at the root: ``/<slug>/``
+    - versioned projects add a version segment: ``/<slug>/<version>/``
+    - translated projects add a language segment:
+      ``/<slug>/<language>/<version>/``
+
+    ``READTHEDOCS_VERSION`` and ``READTHEDOCS_LANGUAGE`` are always set on
+    Read the Docs builds, even when the corresponding segment is absent from
+    the URL schema, so they cannot be appended unconditionally. Instead, the
+    schema is detected from ``READTHEDOCS_CANONICAL_URL`` (which always
+    reflects the segments Read the Docs actually serves) by matching the
+    environment values against its path segments: the version segment is the
+    last path segment, the language segment sits right before it.
+
+    The project slug is never part of the Read the Docs URL (on
+    documentation.ubuntu.com it is added by the hosting proxy), so it always
+    comes from the ``slug`` config value.
+
+    The prefix is only applied when building on Read the Docs (i.e. when
+    READTHEDOCS_CANONICAL_URL is set), because sphinx-notfound-page
+    absolutises every link on the 404 page with it. Local builds keep
+    relative links so the page renders under ``make run`` and direct
+    file access.
+
+    :param config: The Sphinx build configuration
+
+    :returns: The notfound URL prefix
+    """
+    canonical_url = os.environ.get("READTHEDOCS_CANONICAL_URL", "")
+    if not canonical_url:
+        return ""
+
+    # Path segments of the canonical URL, without the scheme and host:
+    # "https://<host>/<language>/<version>/" -> ["<language>", "<version>"]
+    path = canonical_url.rstrip("/").split("/")[3:]
+
+    version = os.environ.get("READTHEDOCS_VERSION", "")
+    language = os.environ.get("READTHEDOCS_LANGUAGE", "")
+
+    # A segment is part of the schema only if it sits in the position where
+    # Read the Docs serves it (version last, language right before it).
+    url_version = path[-1] if path and path[-1] == version else ""
+    url_language = path[-2] if len(path) > 1 and path[-2] == language else ""
+
+    slug = str(config.slug).strip("/")
+    segments = (slug, url_language, url_version)
+    joined = "/".join(segment for segment in segments if segment)
+    return f"/{joined}/" if joined else ""
+
+
+def _modern_pdf_defaults(config: Config) -> None:
+    """Set Canonical branding defaults for sphinx-modern-pdf-style.
+
+    IMPORTANT: ``sphinx_modern_pdf_style`` reads ``modern_pdf_options`` in its
+    own ``config-inited`` handler, and Sphinx fires those handlers in
+    extension-registration order. These defaults therefore only take effect
+    while ``"ulwazi"`` precedes ``"sphinx_modern_pdf_style"`` in the project's
+    ``extensions`` list. Keep that order.
+
+    The ``logo`` is referenced by bare filename, so the asset must be staged
+    next to the generated ``.tex`` file; see :func:`_copy_pdf_assets`.
+
+    :param config: The Sphinx build configuration
+    """
+    canonical_pdf_values = {
+        "author": "Canonical",
+        "logo": "Canonical-logo-4x.png",
+    }
+
+    for key, value in canonical_pdf_values.items():
+        config.modern_pdf_options.setdefault(key, value)
+
+
+def _copy_pdf_assets(app: Sphinx) -> None:
+    """Copy PDF branding assets into the LaTeX output directory.
+
+    ``sphinx_modern_pdf_style`` references the logo by bare filename, so it
+    must sit alongside the generated ``.tex`` file. ``canonical-sphinx-config``
+    defined an equivalent helper but never connected it to any Sphinx event,
+    which is why the logo was always missing from LaTeX builds.
+
+    :param app: The Sphinx application instance
+    """
+    if app.builder.format != "latex":
+        return
+
+    shutil.copytree(
+        str(Path(__file__).parent / "theme/ulwazi/pdf"),
+        app.outdir,
+        dirs_exist_ok=True,
+    )
+
+
+# Loads after the extension's own domain-list.css (Sphinx's default
+# extension priority, 500) and before a project's html_css_files (800), so
+# project overrides still take effect without "!important".
+_STRUCTURED_TOC_CSS_PRIORITY = 600
+
+# Conservative allow-list for a user-supplied CSS colour value: letters,
+# digits, and the punctuation used by hex/named/function colour syntax
+# (e.g. "#E95420", "rebeccapurple", "rgb(0, 0, 0)", "var(--my-color)").
+# Rejects ";{}<>'\"" and other characters that could break out of the
+# injected <style> block.
+_CSS_COLOR_PATTERN = re.compile(r"^[A-Za-z0-9#%().,/+\- ]+$")
+
+
+def _setup_structured_toc_styling(app: Sphinx) -> None:
+    """Link Ulwazi's temporary structured-TOC stylesheet, if applicable.
+
+    Only applies to HTML builds, only when the project has
+    sphinx-structured-toc loaded, and only while the opt-out config value
+    (``ulwazi_structured_toc_styling``) is left at its default of ``True``.
+    See ``ulwazi/theme/ulwazi/static/css/structured-toc.css`` for what the
+    stylesheet does and why it is temporary.
+
+    Connected to ``builder-inited`` (like :func:`_copy_pdf_assets`) rather
+    than ``config-inited``, so this still runs when Ulwazi is selected only
+    via ``html_theme`` (that entry point loads after ``config-inited`` has
+    already fired).
+
+    :param app: The Sphinx application instance
+    """
+    config = app.config
+    if (
+        app.builder.format != "html"
+        or not config.ulwazi_structured_toc_styling
+        or "sphinx_structured_toc" not in app.extensions
+    ):
+        return
+
+    app.add_css_file(  # pyright: ignore [reportUnknownMemberType]
+        "css/structured-toc.css", priority=_STRUCTURED_TOC_CSS_PRIORITY
+    )
+    config.html_context["ulwazi_structured_toc_css"] = _structured_toc_color_css(config)
+
+
+def _structured_toc_color_css(config: Config) -> str:
+    """Build the ``:root`` override for the separator colour options.
+
+    Only valid colour values (see :data:`_CSS_COLOR_PATTERN`) are included;
+    an invalid value is dropped with a build warning and the stylesheet's
+    own default takes over instead.
+
+    :param config: The Sphinx build configuration
+
+    :returns: A ``:root { ... }`` CSS declaration with the valid overrides,
+        or an empty string if neither colour was set (or both were invalid)
+    """
+    # (conf.py setting name, CSS custom property it overrides)
+    overrides = [
+        (
+            "ulwazi_structured_toc_separator_color_light",
+            "--ulwazi-structured-toc-separator-color-light",
+        ),
+        (
+            "ulwazi_structured_toc_separator_color_dark",
+            "--ulwazi-structured-toc-separator-color-dark",
+        ),
+    ]
+
+    declarations: list[str] = []
+    for setting_name, css_property in overrides:
+        value = getattr(config, setting_name)
+        if not value:
+            continue
+        if not _CSS_COLOR_PATTERN.match(value):
+            logger.warning(
+                f"conf.py setting '{setting_name}' has an invalid colour "
+                f"value {value!r} and will be ignored.",
+                type="ulwazi",
+                subtype="structured_toc",
+            )
+            continue
+        declarations.append(f"{css_property}: {value};")
+
+    if not declarations:
+        return ""
+    return ":root{" + " ".join(declarations) + "}"
+
+
+def _setup_help_links(app: Sphinx) -> None:
+    """Validate ``html_context["help_links"]`` once per HTML build.
+
+    Connected to ``builder-inited`` (like :func:`_copy_pdf_assets`) so it also
+    runs when Ulwazi is selected only via ``html_theme``. The normalised
+    result is stored on the app; the raw conf.py value is never mutated.
+    Invalid values warn once here and render nothing later.
+    """
+    if app.builder.format != "html":
+        return
+    app._ulwazi_help_links = validate_help_links(  # pyright: ignore [reportAttributeAccessIssue]
+        app.config.html_context.get("help_links")
+    )
+    # Mark validation as done even when the result is None (off/invalid),
+    # so _compute_navigation_tree never re-validates or re-warns per page.
+    app._ulwazi_help_links_validated = True  # pyright: ignore [reportAttributeAccessIssue]
+
+
+def _compute_navigation_tree(app: Sphinx, context: dict[str, Any]) -> str:
     # The globaltoc tree by Sphinx
     if "toctree" in context:
         toctree = context["toctree"]
@@ -117,7 +471,18 @@ def _compute_navigation_tree(context: dict[str, Any]) -> str:
     else:
         toctree_html = ""
 
-    return get_navigation_tree(toctree_html)
+    navigation_tree = get_navigation_tree(toctree_html)
+    if not navigation_tree:
+        # No toctree means no side navigation: render no help panel either,
+        # even when help_links is configured (nothing to append it to).
+        return ""
+    # Use the value validated once at builder-inited; only fall back to
+    # validating the raw context value for direct callers without an app.
+    if getattr(app, "_ulwazi_help_links_validated", False):
+        help_links = getattr(app, "_ulwazi_help_links", None)
+    else:
+        help_links = validate_help_links(context.get("help_links"))
+    return add_help_links(navigation_tree, help_links)
 
 
 def apply_heading_classes(body_html: str) -> str:
@@ -212,8 +577,10 @@ def apply_admonition_classes(body_html: str) -> str:
             if child.get("class") == ["admonition-title"]:
                 # Default to 'information' class notification
                 div_tag = soup.new_tag(
-                    "div", attrs={"class": "p-notification--information", "id": div_id}
+                    "div", attrs={"class": "p-notification--information"}
                 )
+                if div_id:
+                    div_tag["id"] = div_id
                 title = soup.new_tag("h5", attrs={"class": "p-notification__title"})
                 title.string = child.string if child.string else ""
 
@@ -222,10 +589,11 @@ def apply_admonition_classes(body_html: str) -> str:
                     div_tag = soup.new_tag(
                         "div",
                         attrs={
-                            "class": f"p-notification--{admonition_classes[child.text]}",
-                            "id": div_id,
+                            "class": f"p-notification--{admonition_classes[child.text]}"
                         },
                     )
+                    if div_id:
+                        div_tag["id"] = div_id
                     title = soup.new_tag("h5", attrs={"class": "p-notification__title"})
                     title.string = child.string if child.string is not None else ""
             else:
@@ -247,10 +615,10 @@ def modify_inline_code(body_html: str) -> str:
     soup = BeautifulSoup(body_html, "html.parser")
 
     for code in soup.find_all("code", class_="docutils literal notranslate"):
-        child_tags = code.findChildren()
+        child_tags = code.find_all()
         child_text: list[str] = []
         for child in child_tags:
-            child_text.append(child.string)
+            child_text.append(child.string or "")
             child.decompose()
 
         code.string = " ".join(child_text)
@@ -304,14 +672,14 @@ def modify_local_toc(toc: str) -> str:
     return str(toc_html)
 
 
-def truncate_local_toc(toc: str, max_depth: int = -1) -> str:
+def truncate_local_toc(toc: str, max_depth: int | None = -1) -> str:
     """Limit the number of nested levels if localtoc_max_depth is set in conf.py."""
     if not toc:
         return toc
 
     toc_html = BeautifulSoup(toc, "html.parser")
 
-    if max_depth != -1:
+    if max_depth is not None and max_depth != -1:
 
         def trim_ul(ul: Tag, depth: int = 1) -> None:
             if depth >= max_depth:
@@ -420,12 +788,12 @@ def _html_page_context(
     _doctree: nodes.document | None,
 ) -> None:
     # Values computed from page-level context.
-    context["expandable_navigation_tree"] = _compute_navigation_tree(context)
+    context["expandable_navigation_tree"] = _compute_navigation_tree(app, context)
 
     if "toc" in context:
         context["toc"] = modify_local_toc(context["toc"])
         context["toc"] = truncate_local_toc(
-            context["toc"], getattr(app.config, "localtoc_max_depth", -1)
+            context["toc"], getattr(app.config, "localtoc_max_depth", 3)
         )
 
     # Build navigation breadcrumb mapping for search

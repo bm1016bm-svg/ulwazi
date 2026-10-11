@@ -6,11 +6,14 @@ UV_TICS_GROUPS := "--group=tics"
 
 include common.mk
 
+DOCS_SCRIPTS_TO_LINT := docs/preview_theme.py
+SOURCES += $(DOCS_SCRIPTS_TO_LINT)
+
 .PHONY: format
 format: format-ruff format-codespell format-prettier format-pre-commit  ## Run all automatic formatters
 
 .PHONY: lint
-lint: lint-ruff lint-codespell lint-mypy lint-prettier lint-pyright lint-shellcheck lint-twine  ## Run all linters
+lint: lint-ruff lint-codespell lint-mypy lint-prettier lint-pyright lint-shellcheck lint-twine lint-uv-lockfile  ## Run all linters
 
 .PHONY: pack
 pack: pack-pip  ## Build all packages
@@ -40,7 +43,7 @@ endif
 
 # Ulwazi-specific targets
 vanilla-main: install-npm  ## Install Vanilla and compile CSS
-	npm install
+	npm install --no-audit --no-fund
 	echo "Compiling SCSS to CSS..."
 
 	@echo "Using local sass..."
@@ -56,6 +59,12 @@ product-menu:  ## Update the product menu
 	@echo "Updating the product menu..."
 	python3 ulwazi/product_menu_gen.py
 
+.PHONY: pygments-css
+pygments-css:  ## Regenerate the syntax highlighting stylesheets (pygments-light/dark.css)
+	@echo "Regenerating Pygments stylesheets..."
+	uv run python ulwazi/theme/ulwazi/static/css/generate_pygments_css.py
+	@echo "Done. Rebuild the docs (make docs-clean && make docs) to pick up the changes."
+
 .PHONY: rebuild
 rebuild: clean docs  ## Clean the environment and rebuild the docs
 
@@ -66,23 +75,70 @@ run:  ## Launch an interactive preview of the docs
 # Override tests to build HTML and PDF output as a prerequisite.
 # These should be removed when the docs are built programmatically in the tests.
 .PHONY: test
-test: docs-html  ## Run all tests (excluding PDF builds)
+test: docs-html  ## Run fast tests only (excluding slow tests)
 	uv run pytest -m 'not slow'
 
 .PHONY: test-fast
-test-fast: docs-html
+test-fast: docs-html  ##- Run fast tests only (same as 'make test')
 	uv run pytest -m 'not slow'
 
 .PHONY: test-slow
-test-slow: docs-html docs-pdf-prep-force docs-pdf   ##- Run all tests (including PDF builds)
+test-slow: docs-html docs-pdf-prep docs-pdf   ##- Run slow tests only (PDF builds, browser checks)
 	uv run pytest -m 'slow'
 
+.PHONY: test-all
+test-all: docs-html docs-pdf-prep docs-pdf  ##- Run all tests (fast and slow)
+	uv run pytest
+
+.PHONY: test-code-quality
+test-code-quality:  ##- Run the code quality checks, including each linter
+	uv run pytest tests/test_code_quality.py
+
+# Build the theme and sample docs on every supported Python version.
+#
+# This is a slow test (PR #124 testing-strategy category #7). For each
+# version it provisions a throwaway uv venv, installs the theme plus the
+# ``docs`` dependency group, and builds the sample docs with
+# ``--fail-on-warning``. The developer's ``.venv`` is never touched and the
+# source tree stays clean (build output lives under pytest's ``tmp_path``).
+#
+# The version list is defined once in ``tests/test_python_versions.py``
+# (``SUPPORTED_PYTHON_VERSIONS``); pytest expands it via parametrize, so this
+# target does not repeat the list.
+#
+# ``-n auto`` runs the parametrized versions concurrently via pytest-xdist,
+# which is the local parallelism we want. To run a single version instead:
+#
+#     uv run pytest -m slow tests/test_python_versions.py -k 3.11
+#
+# In CI the monthly workflow (``.github/workflows/test-python-versions.yaml``)
+# uses a GitHub Actions matrix instead of pytest-xdist.
+.PHONY: test-python-versions
+test-python-versions:  ##- Build the theme and docs on every supported Python version (slow)
+	uv run pytest -n auto -m slow tests/test_python_versions.py
+
+# Run the test suite and report three coverage metrics:
+#
+#   1. Python line coverage of the ulwazi package (coverage.py). The
+#      smoke/assets/features tests build the sample docs in-process via the
+#      shared built_site fixture, so the theme's Sphinx hooks are measured.
+#   2. JavaScript line coverage of the theme's own scripts
+#      (results/js-coverage.json), collected by the slow browser journey in
+#      tests/test_features.py via Chromium's V8 coverage API.
+#   3. Curated feature checks: the proportion of entries in tests/features.yaml
+#      whose mapped checks all pass (not an exhaustive feature inventory).
+#
+# Run the fast tier, the tagged JS browser journey, and the existing SCSS
+# computed-colour check in one pytest session so feature coverage uses the
+# same results. PDF and Python-version subprocess builds are excluded.
 .PHONY: test-coverage
-test-coverage: docs-html docs-pdf ##- Run tests and generate coverage report
+test-coverage: docs-html ##- Run tests and report Python, JS, and feature coverage
+	# Fail rather than presenting stale metrics if a run stops early.
+	rm -f results/feature-coverage.json results/js-coverage.json results/coverage.xml
 ifeq ($(COVERAGE_SOURCE),)
-	uv run coverage run --source $(PROJECT),tests -m pytest
+	ULWAZI_COVERAGE_REPORT=1 uv run coverage run --source $(PROJECT) -m pytest -m 'not slow or coverage_js or coverage_style'
 else
-	uv run coverage run --source $(COVERAGE_SOURCE),tests -m pytest
+	ULWAZI_COVERAGE_REPORT=1 uv run coverage run --source $(COVERAGE_SOURCE) -m pytest -m 'not slow or coverage_js or coverage_style'
 endif
 	uv run coverage xml -o results/coverage.xml
 	# for backwards compatibility
@@ -90,3 +146,4 @@ endif
 	cp results/coverage.xml coverage.xml
 	uv run coverage report -m
 	uv run coverage html
+	uv run python tests/coverage_summary.py

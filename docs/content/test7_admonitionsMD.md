@@ -59,3 +59,33 @@ This is a generic admonition
 :::
 
 {ref}`This is a reference to the note admonition above <note-reference>`
+
+:::{important}
+If any of your slices' paths are architecture-specific, you must add the
+`arch` field. For
+[example](https://github.com/canonical/chisel-releases/blob/main/slices/libc6.yaml#L29):
+
+>  `/usr/lib/*-linux-*/libmvec.so.*: {arch: [amd64, arm64]}`
+:::
+
+:::{important}
+An admonition ending with a code block must not show a trailing blank line
+inside the box (the code block's own bottom margin is reset).
+
+```python
+print("last element in the notification")
+```
+:::
+
+- A code block followed by a tip inside a list item:
+
+  ```{code-block} yaml
+  slices:
+    bins:
+      essential:
+        - libc6_libs
+  ```
+
+  ```{tip}
+  This tip keeps the standard gap after the code block inside a list item.
+  ```
